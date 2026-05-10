@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multiverse Screensaver</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#000;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#hud{position:fixed;bottom:18px;right:22px;font-family:'Courier New',monospace;font-size:11px;color:rgba(255,255,255,0.18);pointer-events:none;letter-spacing:2px;text-transform:uppercase}
+#dimname{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-family:'Courier New',monospace;font-size:clamp(18px,4vw,48px);color:rgba(255,255,255,0);pointer-events:none;letter-spacing:8px;text-transform:uppercase;transition:color 0s;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">CLICK · SHIFT DIMENSION</div>
+<div id="dimname"></div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const dimEl = document.getElementById('dimname');
+
+let W, H;
+function resize(){
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+/* ── SEEDED RNG (XORshift) ─────────────────────── */
+let seed = Date.now() ^ (Math.random()*0x7fffffff|0);
+function srng(){
+  seed ^= seed<<13; seed ^= seed>>17; seed ^= seed<<5;
+  return (seed>>>0)/0xffffffff;
+}
+
+/* ── DIMENSION DEFINITIONS ─────────────────────── */
+const DIMS = [
+  {name:'THE VOID',      bg:[2,0,18],    hues:[280,200,160], fade:0.06},
+  {name:'INFERNO PLANE', bg:[18,2,0],    hues:[0,30,340],   fade:0.07},
+  {name:'QUANTUM FIELD', bg:[0,12,18],   hues:[185,160,210], fade:0.05},
+  {name:'FRACTURE ZONE', bg:[8,0,22],    hues:[260,300,220], fade:0.06},
+  {name:'SIGNAL STORM',  bg:[0,18,6],    hues:[130,80,160],  fade:0.07},
+  {name:'ANTIMATTER',    bg:[18,0,12],   hues:[330,280,30],  fade:0.05},
+  {name:'EVENT HORIZON', bg:[0,4,4],     hues:[190,240,120], fade:0.06},
+];
+let dIdx = Math.floor(srng()*DIMS.length);
+let shiftFlash = 0, shiftTimer = 0, shiftInterval = 12+srng()*10;
+
+/* ── GLOBAL TIME ───────────────────────────────── */
+let t = 0;
+const PH = Array.from({length:30},()=>srng()*Math.PI*2);
+const SP = Array.from({length:30},()=>0.4+srng()*1.6);
+
+/* ── DE JONG STRANGE ATTRACTOR ─────────────────── */
+let djx=0.1,djy=0.1;
+let dja,djb,djc,djd;
+const DJ_N = 6000;
+const djbuf = new Float32Array(DJ_N*2);
+
+function updateDJ(t){
+  dja = 1.4+Math.sin(t*0.031+PH[0])*0.85;
+  djb = 1.7+Math.cos(t*0.043+PH[1])*0.75;
+  djc = 0.4+Math.sin(t*0.027+PH[2])*0.55;
+  djd = 1.3+Math.cos(t*0.037+PH[3])*0.65;
+}
+function stepDJ(){
+  for(let i=0;i<DJ_N;i++){
+    const nx=Math.sin(dja*djy)-Math.cos(djb*djx);
+    const ny=Math.sin(djc*djx)-Math.cos(djd*djy);
+    djx=nx; djy=ny;
+    djbuf[i*2]=nx; djbuf[i*2+1]=ny;
+  }
+}
+function drawDJ(hue){
+  const sc=Math.min(W,H)*0.23, cx=W*0.5, cy=H*0.5;
+  for(let i=0;i<DJ_N;i++){
+    const x=cx+djbuf[i*2]*sc, y=cy+djbuf[i*2+1]*sc;
+    if(x<0||x>W||y<0||y>H) continue;
+    const h=(hue+i*0.015+t*12)%360;
+    ctx.fillStyle=`hsla(${h},100%,65%,0.035)`;
+    ctx.fillRect(x,y,1.5,1.5);
+  }
+}
+
+/* ── LORENZ ATTRACTOR (3D projected) ───────────── */
+let lx=0.1,ly=0,lz=0;
+const LOR_N = 3000;
+const lorbuf = new Float32Array(LOR_N*2);
+function stepLorenz(){
+  const sig=10, rho=28+Math.sin(t*0.02)*5, bet=8/3;
+  const dt2=0.004;
+  for(let i=0;i<LOR_N;i++){
+    const dx=sig*(ly-lx), dy=lx*(rho-lz)-ly, dz=lx*ly-bet*lz;
+    lx+=dx*dt2; ly+=dy*dt2; lz+=dz*dt2;
+    lorbuf[i*2]=lx; lorbuf[i*2+1]=lz;
+  }
+}
+function drawLorenz(hue){
+  const sc=Math.min(W,H)*0.011, cx=W*0.5, cy=H*0.5;
+  for(let i=0;i<LOR_N;i++){
+    const x=cx+lorbuf[i*2]*sc, y=cy+(lorbuf[i*2+1]-25)*sc;
+    const h=(hue+180+i*0.02+t*8)%360;
+    ctx.fillStyle=`hsla(${h},90%,65%,0.04)`;
+    ctx.fillRect(x,y,1.2,1.2);
+  }
+}
+
+/* ── PARTICLES ─────────────────────────────────── */
+const NP=700, TRAIL=18;
+const px2=new Float32Array(NP), py2=new Float32Array(NP);
+const pvx=new Float32Array(NP), pvy=new Float32Array(NP);
+const plife=new Float32Array(NP), pmlife=new Float32Array(NP);
+const phue=new Float32Array(NP), psz=new Float32Array(NP);
+const ptx=new Float32Array(NP*TRAIL), pty=new Float32Array(NP*TRAIL);
+const pti=new Int32Array(NP);
+
+function resetP(i){
+  px2[i]=Math.random()*W; py2[i]=Math.random()*H;
+  pvx[i]=(Math.random()-0.5)*2; pvy[i]=(Math.random()-0.5)*2;
+  plife[i]=0; pmlife[i]=0.8+Math.random()*2.8;
+  phue[i]=Math.random()*360; psz[i]=0.6+Math.random()*1.8;
+  pti[i]=0;
+}
+for(let i=0;i<NP;i++) resetP(i);
+
+function updateParticles(){
+  const cx=W*0.5, cy=H*0.5;
+  const vstr=Math.sin(t*0.18+PH[4])*2.2;
+  for(let i=0;i<NP;i++){
+    const dx=px2[i]-cx, dy=py2[i]-cy;
+    const r=Math.sqrt(dx*dx+dy*dy)+0.5;
+    const ang=Math.atan2(dy,dx);
+    pvx[i]+=Math.cos(ang+Math.PI/2)*vstr/(r*0.004+1)*0.06;
+    pvy[i]+=Math.sin(ang+Math.PI/2)*vstr/(r*0.004+1)*0.06;
+    pvx[i]+=Math.sin(py2[i]*0.009+t*0.38+PH[5])*0.12;
+    pvy[i]+=Math.cos(px2[i]*0.008+t*0.32+PH[6])*0.12;
+    pvx[i]+=Math.sin(t*0.25+px2[i]*0.005)*0.05;
+    pvy[i]+=Math.cos(t*0.22+py2[i]*0.005)*0.05;
+    pvx[i]*=0.965; pvy[i]*=0.965;
+    const ti=pti[i];
+    ptx[i*TRAIL+ti]=px2[i]; pty[i*TRAIL+ti]=py2[i];
+    pti[i]=(ti+1)%TRAIL;
+    px2[i]+=pvx[i]; py2[i]+=pvy[i];
+    plife[i]+=0.0035; phue[i]=(phue[i]+0.4)%360;
+    if(px2[i]<-60) px2[i]=W+60; if(px2[i]>W+60) px2[i]=-60;
+    if(py2[i]<-60) py2[i]=H+60; if(py2[i]>H+60) py2[i]=-60;
+    if(plife[i]>pmlife[i]) resetP(i);
+  }
+}
+function drawParticles(){
+  for(let i=0;i<NP;i++){
+    const alpha=Math.sin(plife[i]/pmlife[i]*Math.PI)*0.55;
+    if(alpha<0.02) continue;
+    const ti=pti[i];
+    ctx.beginPath();
+    for(let j=0;j<TRAIL;j++){
+      const idx=(ti+j)%TRAIL;
+      const tx=ptx[i*TRAIL+idx], ty=pty[i*TRAIL+idx];
+      j===0?ctx.moveTo(tx,ty):ctx.lineTo(tx,ty);
+    }
+    ctx.strokeStyle=`hsla(${phue[i]},100%,70%,${alpha})`;
+    ctx.lineWidth=psz[i];
+    ctx.stroke();
+  }
+}
+
+/* ── PORTALS ───────────────────────────────────── */
+const NPortals=5;
+const portals=Array.from({length:NPortals},(_, i)=>({
+  x:W*0.15+srng()*W*0.7, y:H*0.15+srng()*H*0.7,
+  r:55+srng()*190, speed:0.007+srng()*0.022,
+  phase:srng()*Math.PI*2, hue:srng()*360,
+  rings:4+Math.floor(srng()*8), ox:srng(), oy:srng(),
+}));
+
+function drawPortals(){
+  portals.forEach((p,i)=>{
+    const drift=0.9;
+    p.x+=Math.sin(t*0.04*SP[i%5]+p.phase+PH[7+i])*drift;
+    p.y+=Math.cos(t*0.035*SP[i%5]+p.phase+PH[12+i])*drift*0.7;
+    if(p.x<-p.r) p.x=W+p.r; if(p.x>W+p.r) p.x=-p.r;
+    if(p.y<-p.r) p.y=H+p.r; if(p.y>H+p.r) p.y=-p.r;
+    p.hue=(p.hue+0.25)%360;
+    const pr=p.r+Math.sin(t*p.speed*9+p.phase)*p.r*0.28;
+    for(let ring=p.rings;ring>=0;ring--){
+      const rr=pr*(ring/p.rings);
+      const rot=t*p.speed*(ring%2===0?1:-1.4)+p.phase;
+      const a=(1-ring/p.rings)*0.32;
+      ctx.save();
+      ctx.translate(p.x,p.y);
+      ctx.rotate(rot);
+      for(let c=0;c<3;c++){
+        const hue=(p.hue+c*55)%360;
+        const ox=c*1.8, oy=c*0.9;
+        ctx.beginPath();
+        const pts=72;
+        for(let j=0;j<=pts;j++){
+          const ang=(j/pts)*Math.PI*2;
+          const wob=Math.sin(ang*4+rot*2)*rr*0.09;
+          const ex=ox+Math.cos(ang)*(rr+wob);
+          const ey=oy+Math.sin(ang)*(rr+wob)*0.6;
+          j===0?ctx.moveTo(ex,ey):ctx.lineTo(ex,ey);
+        }
+        ctx.closePath();
+        ctx.strokeStyle=`hsla(${hue},100%,65%,${a})`;
+        ctx.lineWidth=1.2;
+        ctx.shadowBlur=14;
+        ctx.shadowColor=`hsla(${hue},100%,65%,0.5)`;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  });
+}
+
+/* ── WORMHOLE ──────────────────────────────────── */
+function drawWormhole(cx,cy,hue){
+  const maxR=Math.min(W,H)*0.4;
+  const rings=55;
+  ctx.save();
+  for(let i=rings;i>=1;i--){
+    const prog=i/rings;
+    const r=prog*maxR;
+    const twst=t*(1.8-prog*0.9)+i*0.22+PH[17];
+    const h=(hue+i*5+t*22)%360;
+    const a=prog*0.22;
+    ctx.beginPath();
+    const pts=90;
+    for(let j=0;j<=pts;j++){
+      const ang=(j/pts)*Math.PI*2;
+      const wob=Math.sin(ang*3+twst)*r*0.1;
+      const ex=cx+Math.cos(ang)*(r+wob);
+      const ey=cy+Math.sin(ang)*(r+wob)*0.52;
+      j===0?ctx.moveTo(ex,ey):ctx.lineTo(ex,ey);
+    }
+    ctx.closePath();
+    ctx.strokeStyle=`hsla(${h},90%,62%,${a})`;
+    ctx.lineWidth=0.7;
+    ctx.stroke();
+  }
+  const g=ctx.createRadialGradient(cx,cy,0,cx,cy,maxR*0.18);
+  g.addColorStop(0,`hsla(${(hue+60)%360},100%,85%,0.45)`);
+  g.addColorStop(0.6,`hsla(${hue},100%,50%,0.1)`);
+  g.addColorStop(1,'transparent');
+  ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(cx,cy,maxR*0.18,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+/* ── LISSAJOUS ─────────────────────────────────── */
+function drawLissajous(cx,cy,rx,ry,a,b,delta,hue,alpha){
+  ctx.beginPath();
+  const pts=2400;
+  const cyc=Math.ceil(a);
+  for(let i=0;i<=pts;i++){
+    const phi=(i/pts)*Math.PI*2*cyc;
+    const ex=cx+rx*Math.sin(a*phi+delta);
+    const ey=cy+ry*Math.sin(b*phi+t*0.05);
+    i===0?ctx.moveTo(ex,ey):ctx.lineTo(ex,ey);
+  }
+  ctx.strokeStyle=`hsla(${hue},100%,65%,${alpha})`;
+  ctx.lineWidth=0.6;
+  ctx.shadowBlur=12;
+  ctx.shadowColor=`hsla(${hue},100%,65%,0.35)`;
+  ctx.stroke();
+  ctx.shadowBlur=0;
+}
+
+/* ── FRACTAL TREE ──────────────────────────────── */
+let ftBr=2+Math.floor(srng()*2);
+function branch(x,y,len,ang,depth,hue){
+  if(depth===0||len<2.5) return;
+  const x2=x+Math.cos(ang)*len, y2=y+Math.sin(ang)*len;
+  const a=depth/8*0.55;
+  ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x2,y2);
+  ctx.strokeStyle=`hsla(${(hue+depth*28)%360},100%,65%,${a})`;
+  ctx.lineWidth=depth*0.38;
+  ctx.shadowBlur=7;
+  ctx.shadowColor=`hsla(${hue},100%,65%,0.25)`;
+  ctx.stroke();
+  const sp=Math.PI/(ftBr+1)+Math.sin(t*0.3+depth*0.5)*0.15;
+  const total=sp*(ftBr-1);
+  for(let b=0;b<ftBr;b++) branch(x2,y2,len*0.63,ang-total/2+sp*b,depth-1,hue);
+}
+function drawFractals(hue){
+  ctx.save();
+  [[W*0.2,H,0],[W*0.5,H,0],[W*0.8,H,0]].forEach(([fx,fy])=>{
+    branch(fx,fy,55+Math.sin(t*0.12)*18,-Math.PI/2+Math.sin(t*0.07)*0.35,7,hue);
+  });
+  ctx.restore();
+}
+
+/* ── REALITY TEARS ─────────────────────────────── */
+const tears=Array.from({length:6},genTear);
+function genTear(){
+  const x0=Math.random()*W, y0=Math.random()*H;
+  const ang=Math.random()*Math.PI, len=80+Math.random()*400;
+  const n=14+Math.floor(Math.random()*16);
+  const pts=[{x:x0,y:y0}];
+  let cx2=x0,cy2=y0;
+  for(let i=0;i<n;i++){
+    cx2+=Math.cos(ang+(Math.random()-0.5)*2.2)*len/n;
+    cy2+=Math.sin(ang+(Math.random()-0.5)*2.2)*len/n;
+    pts.push({x:cx2,y:cy2});
+  }
+  return{pts,hue:Math.random()*360,life:1+Math.random(),
+    decay:0.0015+Math.random()*0.004,width:1+Math.random()*3.5,glow:22+Math.random()*35};
+}
+function drawTears(){
+  ctx.save();
+  tears.forEach((tr,i)=>{
+    tr.life-=tr.decay;
+    if(tr.life<=0) tears[i]=genTear();
+    const pulse=Math.sin(t*3.5+i*1.3)*0.5+0.5;
+    const alpha=Math.min(1,tr.life)*0.72;
+    const hue=(tr.hue+t*25)%360;
+    ctx.beginPath();
+    ctx.moveTo(tr.pts[0].x,tr.pts[0].y);
+    tr.pts.forEach(p=>ctx.lineTo(p.x,p.y));
+    ctx.shadowBlur=tr.glow*pulse;
+    ctx.shadowColor=`hsla(${hue},100%,80%,0.9)`;
+    ctx.strokeStyle=`hsla(${hue},100%,80%,${alpha})`;
+    ctx.lineWidth=tr.width*(0.5+pulse*0.7);
+    ctx.stroke();
+    ctx.shadowBlur=4;
+    ctx.shadowColor='#fff';
+    ctx.strokeStyle=`rgba(255,255,255,${alpha*0.35})`;
+    ctx.lineWidth=0.5;
+    ctx.stroke();
+    ctx.shadowBlur=0;
+  });
+  ctx.restore();
+}
+
+/* ── NEBULAE ───────────────────────────────────── */
+const nebulae=Array.from({length:7},()=>({
+  x:Math.random()*W, y:Math.random()*H,
+  r:140+Math.random()*320, hue:Math.random()*360,
+  sp:0.015+Math.random()*0.045, ph:Math.random()*Math.PI*2,
+}));
+function drawNebulae(){
+  nebulae.forEach(n=>{
+    const nx=n.x+Math.sin(t*n.sp*0.5+n.ph)*70;
+    const ny=n.y+Math.cos(t*n.sp*0.4+n.ph)*50;
+    const hue=(n.hue+t*2.5)%360;
+    const r=n.r+Math.sin(t*n.sp+n.ph)*60;
+    const g=ctx.createRadialGradient(nx,ny,0,nx,ny,r);
+    g.addColorStop(0,`hsla(${hue},65%,28%,0.09)`);
+    g.addColorStop(0.45,`hsla(${(hue+45)%360},75%,18%,0.045)`);
+    g.addColorStop(1,'transparent');
+    ctx.fillStyle=g;
+    ctx.fillRect(nx-r,ny-r,r*2,r*2);
+  });
+}
+
+/* ── KALEIDOSCOPE OVERLAY ──────────────────────── */
+let kaleido=false;
+const offC=document.createElement('canvas');
+const offCtx=offC.getContext('2d');
+function applyKaleidoscope(){
+  offC.width=W; offC.height=H;
+  offCtx.drawImage(canvas,0,0);
+  const sectors=6+Math.floor(Math.sin(t*0.04)*2+2);
+  const cx=W*0.5, cy=H*0.5;
+  const angle=Math.PI*2/sectors;
+  ctx.save();
+  ctx.translate(cx,cy);
+  for(let s=0;s<sectors;s++){
+    ctx.save();
+    ctx.rotate(s*angle);
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.arc(0,0,Math.max(W,H),0,angle);
+    ctx.closePath();
+    ctx.clip();
+    if(s%2===0){
+      ctx.drawImage(offC,-cx,-cy);
+    } else {
+      ctx.scale(-1,1);
+      ctx.drawImage(offC,-cx,-cy);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* ── HYPNOTIC SINE GRID ────────────────────────── */
+function drawSineGrid(hue){
+  const step=28;
+  for(let x=0;x<W;x+=step){
+    for(let y=0;y<H;y+=step){
+      const d1=Math.sqrt((x-W*0.35)**2+(y-H*0.45)**2);
+      const d2=Math.sqrt((x-W*0.65)**2+(y-H*0.55)**2);
+      const d3=Math.sqrt((x-W*0.5)**2+(y-H*0.5)**2);
+      const wave=Math.sin(d1*0.048-t*1.8)+Math.sin(d2*0.041-t*1.5)+Math.sin(d3*0.035-t*2.1);
+      if(Math.abs(wave)>1.6){
+        const h=(hue+wave*50+t*30)%360;
+        ctx.fillStyle=`hsla(${h},100%,62%,0.12)`;
+        ctx.fillRect(x,y,step,step);
+      }
+    }
+  }
+}
+
+/* ── ALIEN GEOMETRY ────────────────────────────── */
+function drawAlienGeom(hue){
+  const n=4+Math.floor(Math.abs(Math.sin(t*0.07))*4+1);
+  const cx=W*0.5+Math.sin(t*0.06+PH[18])*W*0.18;
+  const cy=H*0.5+Math.cos(t*0.07+PH[19])*H*0.15;
+  const base=90+Math.sin(t*0.25)*35;
+  ctx.save();
+  for(let layer=0;layer<5;layer++){
+    const r=base*(1+layer*0.6);
+    const rot=t*(layer%2===0?0.18:-0.14)+layer*0.9+PH[layer];
+    ctx.beginPath();
+    for(let j=0;j<=n;j++){
+      const ang=(j/n)*Math.PI*2+rot;
+      const wob=Math.sin(ang*n*0.7+t*0.5)*r*0.22;
+      const ex=cx+Math.cos(ang)*(r+wob);
+      const ey=cy+Math.sin(ang)*(r+wob)*0.78;
+      j===0?ctx.moveTo(ex,ey):ctx.lineTo(ex,ey);
+    }
+    ctx.closePath();
+    const h=(hue+layer*55)%360;
+    ctx.strokeStyle=`hsla(${h},100%,65%,${0.28-layer*0.04})`;
+    ctx.lineWidth=1.5-layer*0.2;
+    ctx.shadowBlur=18;
+    ctx.shadowColor=`hsla(${h},100%,65%,0.4)`;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ── ACTIVE EFFECTS ────────────────────────────── */
+const ALL_FX=['dj','lorenz','particles','portals','wormhole',
+              'lissajous','fractal','tears','nebulae','grid','alien'];
+let activeFX=new Set();
+
+function pickEffects(){
+  activeFX.clear();
+  const n=4+Math.floor(Math.random()*5);
+  const pool=[...ALL_FX];
+  while(activeFX.size<n&&pool.length){
+    const i=Math.floor(Math.random()*pool.length);
+    activeFX.add(pool.splice(i,1)[0]);
+  }
+  activeFX.add('particles');
+  activeFX.add('nebulae');
+}
+pickEffects();
+
+/* ── DIMENSION SHIFT ───────────────────────────── */
+function doShift(){
+  dIdx=(dIdx+1)%DIMS.length;
+  shiftFlash=1;
+  shiftTimer=0;
+  shiftInterval=10+Math.random()*14;
+  pickEffects();
+  ftBr=2+Math.floor(Math.random()*2);
+  portals.forEach(p=>{
+    p.x=Math.random()*W*0.8+W*0.1;
+    p.y=Math.random()*H*0.8+H*0.1;
+    p.r=55+Math.random()*190;
+    p.hue=Math.random()*360;
+    p.rings=4+Math.floor(Math.random()*8);
+  });
+  nebulae.forEach(n=>{
+    n.x=Math.random()*W; n.y=Math.random()*H;
+    n.hue=Math.random()*360;
+  });
+  const d=DIMS[dIdx];
+  dimEl.style.color='rgba(255,255,255,0.55)';
+  dimEl.textContent=d.name;
+  setTimeout(()=>{ dimEl.style.color='rgba(255,255,255,0)'; },2200);
+  kaleido=Math.random()>0.65;
+}
+
+canvas.addEventListener('click', doShift);
+
+/* ── MAIN LOOP ─────────────────────────────────── */
+let lastTS=0;
+function render(ts){
+  const dt=Math.min((ts-lastTS)/1000,0.05);
+  lastTS=ts;
+  t+=dt;
+  shiftTimer+=dt;
+  if(shiftTimer>shiftInterval) doShift();
+
+  const dim=DIMS[dIdx];
+  const [br,bg,bb]=dim.bg;
+  const fade=dim.fade;
+  ctx.fillStyle=`rgba(${br},${bg},${bb},${fade})`;
+  ctx.fillRect(0,0,W,H);
+
+  if(shiftFlash>0){
+    ctx.fillStyle=`rgba(255,255,255,${shiftFlash*0.18})`;
+    ctx.fillRect(0,0,W,H);
+    shiftFlash-=dt*4;
+  }
+
+  const h0=dim.hues[0], h1=dim.hues[1], h2=dim.hues[2];
+  const baseHue=(h0+Math.sin(t*0.04)*25)%360;
+
+  updateDJ(t);
+  stepDJ();
+  stepLorenz();
+  updateParticles();
+
+  if(activeFX.has('nebulae')) drawNebulae();
+  if(activeFX.has('grid')) drawSineGrid(baseHue);
+  if(activeFX.has('dj')) drawDJ(baseHue);
+  if(activeFX.has('lorenz')) drawLorenz((baseHue+120)%360);
+
+  if(activeFX.has('wormhole')){
+    const wx=W*0.5+Math.sin(t*0.055+PH[20])*W*0.14;
+    const wy=H*0.5+Math.cos(t*0.065+PH[21])*H*0.12;
+    drawWormhole(wx,wy,h2);
+  }
+
+  if(activeFX.has('lissajous')){
+    const la=2+Math.floor(Math.abs(Math.sin(t*0.04+PH[22]))*3+1);
+    const lb=3+Math.floor(Math.abs(Math.cos(t*0.035+PH[23]))*3+1);
+    drawLissajous(W*0.5,H*0.5,W*0.34,H*0.34,la,lb,Math.sin(t*0.09)*Math.PI,(baseHue+90)%360,0.22);
+  }
+
+  if(activeFX.has('portals')) drawPortals();
+  if(activeFX.has('alien')) drawAlienGeom(h1);
+  if(activeFX.has('fractal')) drawFractals((baseHue+60)%360);
+
+  if(activeFX.has('particles')) drawParticles();
+  if(activeFX.has('tears')) drawTears();
+
+  if(kaleido && Math.sin(t*0.15)>0.5){
+    /* subtle mirror pulse every ~20s */
+  }
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+/* initial dimension name flash */
+setTimeout(()=>{
+  dimEl.textContent=DIMS[dIdx].name;
+  dimEl.style.color='rgba(255,255,255,0.4)';
+  setTimeout(()=>{ dimEl.style.color='rgba(255,255,255,0)'; },2500);
+},400);
+</script>
+</body>
+</html>
