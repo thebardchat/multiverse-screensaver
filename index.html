@@ -57,7 +57,7 @@ const SP = Array.from({length:30},()=>0.4+srng()*1.6);
 /* ── DE JONG STRANGE ATTRACTOR ─────────────────── */
 let djx=0.1,djy=0.1;
 let dja,djb,djc,djd;
-const DJ_N = 6000;
+const DJ_N = 3000;
 const djbuf = new Float32Array(DJ_N*2);
 
 function updateDJ(t){
@@ -74,20 +74,28 @@ function stepDJ(){
     djbuf[i*2]=nx; djbuf[i*2+1]=ny;
   }
 }
+const _djBuckets = Array.from({length:360}, () => []);
 function drawDJ(hue){
   const sc=Math.min(W,H)*0.23, cx=W*0.5, cy=H*0.5;
+  for(let b=0;b<360;b++) _djBuckets[b].length=0;
   for(let i=0;i<DJ_N;i++){
     const x=cx+djbuf[i*2]*sc, y=cy+djbuf[i*2+1]*sc;
     if(x<0||x>W||y<0||y>H) continue;
-    const h=(hue+i*0.015+t*12)%360;
+    let h=((hue+i*0.015+t*12)|0)%360;
+    if(h<0) h+=360;
+    _djBuckets[h].push(x,y);
+  }
+  for(let h=0;h<360;h++){
+    const c=_djBuckets[h];
+    if(c.length===0) continue;
     ctx.fillStyle=`hsla(${h},100%,65%,0.035)`;
-    ctx.fillRect(x,y,1.5,1.5);
+    for(let j=0;j<c.length;j+=2) ctx.fillRect(c[j],c[j+1],1.5,1.5);
   }
 }
 
 /* ── LORENZ ATTRACTOR (3D projected) ───────────── */
 let lx=0.1,ly=0,lz=0;
-const LOR_N = 3000;
+const LOR_N = 1500;
 const lorbuf = new Float32Array(LOR_N*2);
 function stepLorenz(){
   const sig=10, rho=28+Math.sin(t*0.02)*5, bet=8/3;
@@ -98,13 +106,21 @@ function stepLorenz(){
     lorbuf[i*2]=lx; lorbuf[i*2+1]=lz;
   }
 }
+const _lorBuckets = Array.from({length:360}, () => []);
 function drawLorenz(hue){
   const sc=Math.min(W,H)*0.011, cx=W*0.5, cy=H*0.5;
+  for(let b=0;b<360;b++) _lorBuckets[b].length=0;
   for(let i=0;i<LOR_N;i++){
     const x=cx+lorbuf[i*2]*sc, y=cy+(lorbuf[i*2+1]-25)*sc;
-    const h=(hue+180+i*0.02+t*8)%360;
+    let h=((hue+180+i*0.02+t*8)|0)%360;
+    if(h<0) h+=360;
+    _lorBuckets[h].push(x,y);
+  }
+  for(let h=0;h<360;h++){
+    const c=_lorBuckets[h];
+    if(c.length===0) continue;
     ctx.fillStyle=`hsla(${h},90%,65%,0.04)`;
-    ctx.fillRect(x,y,1.2,1.2);
+    for(let j=0;j<c.length;j+=2) ctx.fillRect(c[j],c[j+1],1.2,1.2);
   }
 }
 
@@ -278,8 +294,6 @@ function branch(x,y,len,ang,depth,hue){
   ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x2,y2);
   ctx.strokeStyle=`hsla(${(hue+depth*28)%360},100%,65%,${a})`;
   ctx.lineWidth=depth*0.38;
-  ctx.shadowBlur=7;
-  ctx.shadowColor=`hsla(${hue},100%,65%,0.25)`;
   ctx.stroke();
   const sp=Math.PI/(ftBr+1)+Math.sin(t*0.3+depth*0.5)*0.15;
   const total=sp*(ftBr-1);
@@ -361,7 +375,7 @@ let kaleido=false;
 const offC=document.createElement('canvas');
 const offCtx=offC.getContext('2d');
 function applyKaleidoscope(){
-  offC.width=W; offC.height=H;
+  if(offC.width!==W||offC.height!==H){ offC.width=W; offC.height=H; }
   offCtx.drawImage(canvas,0,0);
   const sectors=6+Math.floor(Math.sin(t*0.04)*2+2);
   const cx=W*0.5, cy=H*0.5;
@@ -441,14 +455,12 @@ let activeFX=new Set();
 
 function pickEffects(){
   activeFX.clear();
-  const n=4+Math.floor(Math.random()*5);
-  const pool=[...ALL_FX];
-  while(activeFX.size<n&&pool.length){
+  activeFX.add('nebulae');
+  const pool=ALL_FX.filter(fx=>fx!=='nebulae');
+  while(activeFX.size<5&&pool.length){
     const i=Math.floor(Math.random()*pool.length);
     activeFX.add(pool.splice(i,1)[0]);
   }
-  activeFX.add('particles');
-  activeFX.add('nebulae');
 }
 pickEffects();
 
